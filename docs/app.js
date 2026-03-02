@@ -11,6 +11,56 @@ const STORES = ['walmart', 'target', 'costco'];
 const STORE_LABELS = { walmart: 'Walmart 🛒', target: 'Target 🎯', costco: 'Costco 🏪' };
 const STORE_COLORS = { walmart: 'store-walmart', target: 'store-target', costco: 'store-costco' };
 
+// Pre-configured featured items per store tab
+const FEATURED_ITEMS = {
+  target: [
+    {
+      id: 'target-94300067',
+      store: 'target',
+      tcin: '94300067',
+      name: 'Pokémon TCG: Scarlet & Violet—Destined Rivals Booster Bundle',
+      url: 'https://www.target.com/p/pok-233-mon-trading-card-game-scarlet-38-violet-8212-destined-rivals-booster-bundle/-/A-94300067',
+      image: 'https://target.scene7.com/is/image/Target/94300067?wid=325&hei=325&fmt=pjpeg&qlt=80',
+    },
+    {
+      id: 'target-94300069',
+      store: 'target',
+      tcin: '94300069',
+      name: 'Pokémon TCG: Scarlet & Violet—Destined Rivals Elite Trainer Box',
+      url: 'https://www.target.com/p/pok-233-mon-trading-card-game-scarlet-38-violet-8212-destined-rivals-elite-trainer-box/-/A-94300069',
+      image: 'https://target.scene7.com/is/image/Target/94300069?wid=325&hei=325&fmt=pjpeg&qlt=80',
+    },
+  ],
+  walmart: [
+    {
+      id: 'walmart-15042474261',
+      store: 'walmart',
+      itemId: '15042474261',
+      name: 'Pokémon TCG: Scarlet & Violet—Journey Together Booster Bundle',
+      url: 'https://www.walmart.com/ip/Pokemon-Trading-Card-Games-Scarlet-Violet-9-Journey-Together-Booster-Bundle/15042474261',
+      image: null,
+    },
+    {
+      id: 'walmart-18710966734',
+      store: 'walmart',
+      itemId: '18710966734',
+      name: 'Pokémon TCG: Mega Evolution Ascended Heroes Elite Trainer Box',
+      url: 'https://www.walmart.com/ip/Pok-mon-Trading-Card-Game-Mega-Evolution-Ascended-Heroes-Elite-Trainer-Box/18710966734',
+      image: null,
+    },
+  ],
+  costco: [
+    {
+      id: 'costco-4000114207',
+      store: 'costco',
+      itemId: '4000114207',
+      name: 'Pokémon 3-Pack Stacking Tins with Booster Packs',
+      url: 'https://www.costco.com/pok%C3%A9mon-3-pack-stacking-tins-with-booster-packs.product.4000114207.html',
+      image: null,
+    },
+  ],
+};
+
 // =====================
 // STORAGE HELPERS
 // =====================
@@ -41,12 +91,14 @@ function saveWatchlist(userId, items) {
 // =====================
 let state = {
   view: 'login',          // 'login' | 'signup' | 'resetPassword' | 'dashboard'
+  activeTab: 'search',    // 'search' | 'target' | 'walmart' | 'costco' | 'watchlist'
   user: null,
   watchlist: [],
   searchResults: null,    // null = no search yet, [] = no results
   searchLoading: false,
   editingItem: null,      // watchlist item being edited
   message: null,          // { type: 'success'|'error'|'info', text: string }
+  featuredItemData: {},   // item.id → { price, inStock, image, loading }
 };
 
 // =====================
@@ -54,11 +106,197 @@ let state = {
 // =====================
 function navigate(view, message) {
   state.view = view;
+  state.activeTab = 'search';
   state.message = message || null;
   state.searchResults = null;
   state.searchLoading = false;
   state.editingItem = null;
   render();
+}
+
+// =====================
+// TAB SWITCHING
+// =====================
+function switchTab(tab) {
+  state.activeTab = tab;
+  document.querySelectorAll('.nav-tab').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  const container = document.getElementById('tab-content');
+  if (container) {
+    container.innerHTML = getTabContentHTML();
+    attachTabContentListeners();
+    if (['target', 'walmart', 'costco'].includes(tab)) {
+      loadStoreTabData(tab);
+    }
+  }
+}
+
+// =====================
+// LIVE DATA FETCHING
+// NOTE: The Target API key below is a publicly known, browser-facing key embedded
+// in Target's own web pages. The allorigins proxy is used only to bypass browser
+// CORS restrictions for a static GitHub Pages deployment; a production deployment
+// should use a dedicated backend proxy instead.
+// =====================
+async function fetchTargetItemData(tcin) {
+  try {
+    // Try the product detail page API first
+    const pdpUrl = `https://redsky.target.com/redsky_aggregations/v1/web/pdp_client_v1?key=9f36aeafbe60771e321a7cc95a78140772ab3e96&tcin=${encodeURIComponent(tcin)}&pricing_store_id=1148&visitor_id=018a4f66-7697-4a8b-b982-55de86a92c59&channel=WEB&page=%2Fp%2FA-${encodeURIComponent(tcin)}`;
+    const resp = await fetch(pdpUrl, { headers: { 'Accept': 'application/json' } });
+    if (resp.ok) {
+      const data = await resp.json();
+      const product = data?.data?.product;
+      if (product) {
+        const desc = product.item?.product_description || {};
+        const price = product.price || {};
+        const avail = product.availability || {};
+        const images = product.item?.enrichment?.images || {};
+        return {
+          name: desc.title || null,
+          price: price.current_retail != null ? `$${Number(price.current_retail).toFixed(2)}` : null,
+          inStock: avail.availability_status === 'IN_STOCK' || avail.availability_status === 'AVAILABLE',
+          image: images.primary_image_url || null,
+        };
+      }
+    }
+    // Fallback: search API with TCIN as keyword
+    const searchUrl = `https://redsky.target.com/redsky_aggregations/v1/web/plp_search_v2?key=9f36aeafbe60771e321a7cc95a78140772ab3e96&keyword=${encodeURIComponent(tcin)}&count=5&offset=0&channel=WEB&country=US&locale=en-US`;
+    const sr = await fetch(searchUrl, { headers: { 'Accept': 'application/json' } });
+    if (!sr.ok) throw new Error('Search API error');
+    const sdata = await sr.json();
+    const products = sdata?.data?.search?.products || [];
+    const match = products.find(p => p.item?.tcin === tcin) || products[0];
+    if (!match) return null;
+    const it = match.item || {};
+    const desc = it.product_description || {};
+    const priceObj = it.price || {};
+    return {
+      name: desc.title || null,
+      price: priceObj.current_retail != null ? `$${Number(priceObj.current_retail).toFixed(2)}` : null,
+      inStock: it.availability_status === 'IN_STOCK' || it.availability_status === 'AVAILABLE',
+      image: it.enrichment?.images?.primary_image_url || null,
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
+async function fetchWalmartItemData(itemId) {
+  try {
+    const walmartUrl = `https://www.walmart.com/ip/${encodeURIComponent(itemId)}`;
+    const resp = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(walmartUrl)}`);
+    if (!resp.ok) throw new Error('Proxy error');
+    const data = await resp.json();
+    const html = data.contents || '';
+    // Try __NEXT_DATA__ (Walmart's Next.js SSR payload)
+    const m = html.match(/<script id="__NEXT_DATA__" type="application\/json">([\s\S]*?)<\/script>/);
+    if (m) {
+      const nextData = JSON.parse(m[1]);
+      const prod = nextData?.props?.pageProps?.initialData?.data?.product;
+      if (prod) {
+        return {
+          name: prod.name || null,
+          price: prod.priceInfo?.currentPrice?.price != null ? `$${prod.priceInfo.currentPrice.price}` : null,
+          inStock: prod.availabilityStatus === 'IN_STOCK',
+          image: prod.imageInfo?.thumbnailUrl || null,
+        };
+      }
+    }
+    // Try JSON-LD
+    const ldMatch = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+    if (ldMatch) {
+      const ld = JSON.parse(ldMatch[1]);
+      const offer = Array.isArray(ld.offers) ? ld.offers[0] : ld.offers;
+      return {
+        name: ld.name || null,
+        price: offer?.price != null ? `$${offer.price}` : null,
+        inStock: (offer?.availability || '').includes('InStock'),
+        image: Array.isArray(ld.image) ? ld.image[0] : (ld.image || null),
+      };
+    }
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function fetchCostcoItemData(itemUrl) {
+  try {
+    const resp = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(itemUrl)}`);
+    if (!resp.ok) throw new Error('Proxy error');
+    const data = await resp.json();
+    const html = data.contents || '';
+    // Try JSON-LD
+    const ldMatch = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/);
+    if (ldMatch) {
+      const ld = JSON.parse(ldMatch[1]);
+      const offer = Array.isArray(ld.offers) ? ld.offers[0] : ld.offers;
+      return {
+        name: ld.name || null,
+        price: offer?.price != null ? `$${offer.price}` : null,
+        inStock: (offer?.availability || '').includes('InStock'),
+        image: Array.isArray(ld.image) ? ld.image[0] : (ld.image || null),
+      };
+    }
+    // Fallback HTML parse via DOMParser
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const name = doc.querySelector('h1')?.textContent?.trim() || null;
+    const priceText = doc.querySelector('.value')?.textContent?.trim() || null;
+    const img = doc.querySelector('.product-img img, .cloudzoom img')?.src || null;
+    return { name, price: priceText, inStock: null, image: img };
+  } catch (e) {
+    return null;
+  }
+}
+
+async function loadStoreTabData(store) {
+  const items = FEATURED_ITEMS[store] || [];
+  const toFetch = items.filter(item => !state.featuredItemData[item.id]);
+  if (toFetch.length === 0) return;
+
+  // Mark items as loading and re-render cards
+  toFetch.forEach(item => {
+    state.featuredItemData[item.id] = { loading: true };
+  });
+  if (state.activeTab === store) {
+    const grid = document.getElementById(`featured-grid-${store}`);
+    if (grid) {
+      grid.innerHTML = items.map(item => featuredCardHTML(item)).join('');
+      attachFeaturedCardListenersAll(store);
+    }
+  }
+
+  // Fetch all items in parallel
+  await Promise.all(toFetch.map(async (item) => {
+    let liveData = null;
+    try {
+      if (store === 'target' && item.tcin) {
+        liveData = await fetchTargetItemData(item.tcin);
+      } else if (store === 'walmart' && item.itemId) {
+        liveData = await fetchWalmartItemData(item.itemId);
+      } else if (store === 'costco') {
+        liveData = await fetchCostcoItemData(item.url);
+      }
+    } catch (e) {
+      // Log the error for debugging; liveData stays null and the card falls back to static data
+      console.warn(`[Availify] Failed to fetch live data for "${item.name}":`, e.message);
+    }
+    state.featuredItemData[item.id] = { loading: false, ...(liveData || {}) };
+
+    // Update just this card if still on the same tab
+    if (state.activeTab === store) {
+      const cardEl = document.getElementById(`featured-card-${item.id}`);
+      if (cardEl) {
+        const temp = document.createElement('div');
+        temp.innerHTML = featuredCardHTML(item);
+        const newCard = temp.firstElementChild;
+        cardEl.replaceWith(newCard);
+        attachFeaturedCardListeners(newCard, item);
+      }
+    }
+  }));
 }
 
 // =====================
@@ -180,6 +418,15 @@ function handleDeleteWatchlistItem(id) {
   state.watchlist = state.watchlist.filter(i => i.id !== id);
   saveWatchlist(state.user.id, state.watchlist);
   renderWatchlist();
+  // Refresh store tab cards so Watch/Remove buttons update
+  if (['target', 'walmart', 'costco'].includes(state.activeTab)) {
+    const grid = document.getElementById(`featured-grid-${state.activeTab}`);
+    if (grid) {
+      const items = FEATURED_ITEMS[state.activeTab] || [];
+      grid.innerHTML = items.map(item => featuredCardHTML(item)).join('');
+      attachFeaturedCardListenersAll(state.activeTab);
+    }
+  }
 }
 
 function openEditModal(id) {
@@ -213,6 +460,74 @@ function closeModal() {
   state.editingItem = null;
   const overlay = document.getElementById('modal-overlay');
   if (overlay) overlay.remove();
+}
+
+// =====================
+// FEATURED ITEM WATCHLIST ACTIONS
+// =====================
+function isFeaturedItemOnWatchlist(item) {
+  return state.watchlist.some(
+    w => (w.url && w.url === item.url) ||
+         (w.store === item.store && w.query === item.name)
+  );
+}
+
+function handleAddFeaturedItemToWatchlist(item) {
+  if (isFeaturedItemOnWatchlist(item)) {
+    showStoreMessage(item.store, 'info', `"${item.name}" is already on your watchlist.`);
+    return;
+  }
+  const liveData = state.featuredItemData[item.id] || {};
+  const wlItem = {
+    id: Date.now().toString(),
+    store: item.store,
+    query: item.name,
+    url: item.url,
+    price: liveData.price || null,
+    image: liveData.image || item.image || null,
+    addedAt: new Date().toISOString(),
+    lastStatus: liveData.inStock != null
+      ? { available: liveData.inStock, products: [] }
+      : null,
+  };
+  state.watchlist.push(wlItem);
+  saveWatchlist(state.user.id, state.watchlist);
+  updateTabBadge();
+  // Update the card to show "Remove" button
+  refreshFeaturedCard(item);
+  showStoreMessage(item.store, 'success', `"${item.name}" added to your watchlist!`);
+}
+
+function handleRemoveFeaturedItemFromWatchlist(item) {
+  const wlItem = state.watchlist.find(
+    w => (w.url && w.url === item.url) ||
+         (w.store === item.store && w.query === item.name)
+  );
+  if (!wlItem) return;
+  state.watchlist = state.watchlist.filter(w => w.id !== wlItem.id);
+  saveWatchlist(state.user.id, state.watchlist);
+  updateTabBadge();
+  // Update the card to show "Watch" button
+  refreshFeaturedCard(item);
+  showStoreMessage(item.store, 'info', `"${item.name}" removed from your watchlist.`);
+}
+
+function refreshFeaturedCard(item) {
+  const cardEl = document.getElementById(`featured-card-${item.id}`);
+  if (cardEl) {
+    const temp = document.createElement('div');
+    temp.innerHTML = featuredCardHTML(item);
+    const newCard = temp.firstElementChild;
+    cardEl.replaceWith(newCard);
+    attachFeaturedCardListeners(newCard, item);
+  }
+}
+
+function updateTabBadge() {
+  const tabBadge = document.querySelector('.nav-tab[data-tab="watchlist"] .tab-badge');
+  if (tabBadge) tabBadge.textContent = state.watchlist.length;
+  const countBadge = document.getElementById('watchlist-count-badge');
+  if (countBadge) countBadge.textContent = state.watchlist.length;
 }
 
 // =====================
@@ -309,6 +624,14 @@ function showMessage(type, text) {
 
 function showSearchMessage(type, text) {
   const container = document.getElementById('search-message-container');
+  if (container) {
+    container.innerHTML = alertHTML(type, text);
+    setTimeout(() => { if (container) container.innerHTML = ''; }, 4000);
+  }
+}
+
+function showStoreMessage(store, type, text) {
+  const container = document.getElementById(`store-message-${store}`);
   if (container) {
     container.innerHTML = alertHTML(type, text);
     setTimeout(() => { if (container) container.innerHTML = ''; }, 4000);
@@ -462,53 +785,156 @@ function renderDashboard() {
           <button id="btn-logout" class="btn btn-sm btn-secondary">Logout</button>
         </div>
       </header>
+      <nav class="tab-nav">
+        <button class="nav-tab${state.activeTab === 'search' ? ' active' : ''}" data-tab="search">🔍 Search</button>
+        <button class="nav-tab${state.activeTab === 'target' ? ' active' : ''}" data-tab="target">🎯 Target</button>
+        <button class="nav-tab${state.activeTab === 'walmart' ? ' active' : ''}" data-tab="walmart">🛒 Walmart</button>
+        <button class="nav-tab${state.activeTab === 'costco' ? ' active' : ''}" data-tab="costco">🏪 Costco</button>
+        <button class="nav-tab${state.activeTab === 'watchlist' ? ' active' : ''}" data-tab="watchlist">
+          ⭐ Watchlist <span class="tab-badge">${state.watchlist.length}</span>
+        </button>
+      </nav>
       <main class="dashboard-body">
-        <div class="dashboard-grid">
-
-          <!-- Search Panel -->
-          <div class="card">
-            <div class="card-header">
-              <h3>🔍 Search Inventory</h3>
-            </div>
-            <div class="card-body">
-              <form id="search-form" class="search-form">
-                <div class="search-row">
-                  <select id="search-store">
-                    <option value="">Store…</option>
-                    ${STORES.map(s => `<option value="${s}">${STORE_LABELS[s]}</option>`).join('')}
-                  </select>
-                  <input type="text" id="search-query" placeholder="Search for an item…" autocomplete="off" />
-                </div>
-                <button type="submit" class="btn btn-primary">Search</button>
-              </form>
-              <div id="search-message-container"></div>
-              <div id="search-results-container" class="search-results"></div>
-            </div>
-          </div>
-
-          <!-- Watchlist Panel -->
-          <div class="card">
-            <div class="card-header">
-              <h3>⭐ My Watchlist</h3>
-              <span id="watchlist-count-badge" class="watchlist-count">${state.watchlist.length}</span>
-            </div>
-            <div class="card-body">
-              <form id="wl-add-form" class="watchlist-add-form">
-                <select id="wl-store">
-                  <option value="">Store…</option>
-                  ${STORES.map(s => `<option value="${s}">${STORE_LABELS[s]}</option>`).join('')}
-                </select>
-                <input type="text" id="wl-query" placeholder="Item to watch…" autocomplete="off" />
-                <button type="submit" class="btn btn-success btn-sm">+ Add</button>
-              </form>
-              <div id="watchlist-container" class="panel-scroll">
-                ${watchlistHTML()}
-              </div>
-            </div>
-          </div>
-
+        <div id="tab-content">
+          ${getTabContentHTML()}
         </div>
       </main>
+    </div>
+  `;
+}
+
+function getTabContentHTML() {
+  switch (state.activeTab) {
+    case 'search':    return renderSearchTab();
+    case 'target':    return renderStoreTab('target');
+    case 'walmart':   return renderStoreTab('walmart');
+    case 'costco':    return renderStoreTab('costco');
+    case 'watchlist': return renderWatchlistTab();
+    default:          return renderSearchTab();
+  }
+}
+
+// =====================
+// RENDER – SEARCH TAB
+// =====================
+function renderSearchTab() {
+  return `
+    <div class="card">
+      <div class="card-header">
+        <h3>🔍 Search Inventory</h3>
+      </div>
+      <div class="card-body">
+        <form id="search-form" class="search-form">
+          <div class="search-row">
+            <select id="search-store">
+              <option value="">Store…</option>
+              ${STORES.map(s => `<option value="${s}">${STORE_LABELS[s]}</option>`).join('')}
+            </select>
+            <input type="text" id="search-query" placeholder="Search for an item…" autocomplete="off" />
+          </div>
+          <button type="submit" class="btn btn-primary">Search</button>
+        </form>
+        <div id="search-message-container"></div>
+        <div id="search-results-container" class="search-results"></div>
+      </div>
+    </div>
+  `;
+}
+
+// =====================
+// RENDER – STORE TABS
+// =====================
+function renderStoreTab(store) {
+  const items = FEATURED_ITEMS[store] || [];
+  const label = STORE_LABELS[store];
+  return `
+    <div class="card">
+      <div class="card-header">
+        <h3>${label} – Featured Items</h3>
+        <button class="btn btn-sm btn-outline btn-refresh-store" data-store="${escapeHtml(store)}">🔄 Refresh</button>
+      </div>
+      <div class="card-body">
+        <div id="store-message-${escapeHtml(store)}"></div>
+        <div class="featured-grid" id="featured-grid-${escapeHtml(store)}">
+          ${items.map(item => featuredCardHTML(item)).join('')}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function featuredCardHTML(item) {
+  const liveData = state.featuredItemData[item.id] || {};
+  const loading = liveData.loading === true;
+  const onWatchlist = isFeaturedItemOnWatchlist(item);
+  const imageUrl = liveData.image || item.image;
+
+  const imageHTML = imageUrl
+    ? `<img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(item.name)}" class="featured-card-img" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'" /><div class="featured-card-img-placeholder" style="display:none">${escapeHtml(STORE_LABELS[item.store].split(' ').pop())}</div>`
+    : `<div class="featured-card-img-placeholder">${escapeHtml(STORE_LABELS[item.store].split(' ').pop())}</div>`;
+
+  let stockBadge;
+  if (loading) {
+    stockBadge = `<span class="badge" style="background:#F3F4F6;color:#6B7280;"><span class="spinner-xs"></span> Loading…</span>`;
+  } else if (liveData.inStock === true) {
+    stockBadge = `<span class="badge badge-in-stock">✅ In Stock</span>`;
+  } else if (liveData.inStock === false) {
+    stockBadge = `<span class="badge badge-out-of-stock">❌ Out of Stock</span>`;
+  } else {
+    stockBadge = `<span class="badge" style="background:#F3F4F6;color:#6B7280;">⏳ Check site</span>`;
+  }
+
+  const priceHTML = liveData.price
+    ? `<div class="featured-card-price">${escapeHtml(liveData.price)}</div>`
+    : (loading ? `<div class="featured-card-price featured-card-price--loading">Loading…</div>` : '');
+
+  const watchBtn = onWatchlist
+    ? `<button class="btn btn-sm btn-danger btn-remove-featured" data-item-id="${escapeHtml(item.id)}">🗑️ Remove</button>`
+    : `<button class="btn btn-sm btn-success btn-add-featured" data-item-id="${escapeHtml(item.id)}">+ Watch</button>`;
+
+  return `
+    <div class="featured-card" id="featured-card-${escapeHtml(item.id)}">
+      <div class="featured-card-image">
+        ${imageHTML}
+      </div>
+      <div class="featured-card-body">
+        <div class="featured-card-name">
+          <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.name)}</a>
+        </div>
+        ${priceHTML}
+        <div class="featured-card-status">${stockBadge}</div>
+      </div>
+      <div class="featured-card-actions">
+        ${watchBtn}
+        <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">View →</a>
+      </div>
+    </div>
+  `;
+}
+
+// =====================
+// RENDER – WATCHLIST TAB
+// =====================
+function renderWatchlistTab() {
+  return `
+    <div class="card">
+      <div class="card-header">
+        <h3>⭐ My Watchlist</h3>
+        <span id="watchlist-count-badge" class="watchlist-count">${state.watchlist.length}</span>
+      </div>
+      <div class="card-body">
+        <form id="wl-add-form" class="watchlist-add-form">
+          <select id="wl-store">
+            <option value="">Store…</option>
+            ${STORES.map(s => `<option value="${s}">${STORE_LABELS[s]}</option>`).join('')}
+          </select>
+          <input type="text" id="wl-query" placeholder="Item to watch…" autocomplete="off" />
+          <button type="submit" class="btn btn-success btn-sm">+ Add</button>
+        </form>
+        <div id="watchlist-container" class="panel-scroll">
+          ${watchlistHTML()}
+        </div>
+      </div>
     </div>
   `;
 }
@@ -528,11 +954,14 @@ function watchlistItemHTML(item) {
     : `<span class="badge" style="background:#F3F4F6;color:#6B7280;">⏳ Not checked</span>`;
 
   const added = new Date(item.addedAt).toLocaleDateString();
+  const urlLink = item.url
+    ? ` <a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" class="wl-item-link" title="View on site">↗</a>`
+    : '';
 
   return `
     <div class="watchlist-item" data-id="${escapeHtml(item.id)}">
       <div class="watchlist-item-info">
-        <div class="watchlist-item-name" title="${escapeHtml(item.query)}">${escapeHtml(item.query)}</div>
+        <div class="watchlist-item-name" title="${escapeHtml(item.query)}">${escapeHtml(item.query)}${urlLink}</div>
         <div class="watchlist-item-meta">
           <span class="${STORE_COLORS[item.store]} font-semibold">${STORE_LABELS[item.store]}</span>
           &nbsp;•&nbsp;Added ${added}
@@ -627,8 +1056,7 @@ function renderModal() {
 function renderWatchlist() {
   const container = document.getElementById('watchlist-container');
   if (container) container.innerHTML = watchlistHTML();
-  const badge = document.getElementById('watchlist-count-badge');
-  if (badge) badge.textContent = state.watchlist.length;
+  updateTabBadge();
   attachWatchlistListeners();
 }
 
@@ -662,11 +1090,56 @@ function attachEventListeners() {
 
   if (v === 'dashboard') {
     document.getElementById('btn-logout').addEventListener('click', handleLogout);
-    document.getElementById('search-form').addEventListener('submit', handleSearch);
-    document.getElementById('wl-add-form').addEventListener('submit', handleAddWatchlistItem);
-    attachWatchlistListeners();
+    document.querySelectorAll('.nav-tab').forEach(btn => {
+      btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+    });
+    attachTabContentListeners();
+    // Trigger data load for the initial active store tab (if applicable)
+    if (['target', 'walmart', 'costco'].includes(state.activeTab)) {
+      loadStoreTabData(state.activeTab);
+    }
+  }
+}
+
+function attachTabContentListeners() {
+  const tab = state.activeTab;
+  if (tab === 'search') {
+    const form = document.getElementById('search-form');
+    if (form) form.addEventListener('submit', handleSearch);
     attachSearchResultListeners();
   }
+  if (tab === 'watchlist') {
+    const form = document.getElementById('wl-add-form');
+    if (form) form.addEventListener('submit', handleAddWatchlistItem);
+    attachWatchlistListeners();
+  }
+  if (['target', 'walmart', 'costco'].includes(tab)) {
+    const refreshBtn = document.querySelector('.btn-refresh-store');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', () => {
+        const store = refreshBtn.dataset.store;
+        (FEATURED_ITEMS[store] || []).forEach(item => {
+          delete state.featuredItemData[item.id];
+        });
+        loadStoreTabData(store);
+      });
+    }
+    attachFeaturedCardListenersAll(tab);
+  }
+}
+
+function attachFeaturedCardListenersAll(store) {
+  (FEATURED_ITEMS[store] || []).forEach(item => {
+    const card = document.getElementById(`featured-card-${item.id}`);
+    if (card) attachFeaturedCardListeners(card, item);
+  });
+}
+
+function attachFeaturedCardListeners(cardEl, item) {
+  const addBtn = cardEl.querySelector('.btn-add-featured');
+  if (addBtn) addBtn.addEventListener('click', () => handleAddFeaturedItemToWatchlist(item));
+  const removeBtn = cardEl.querySelector('.btn-remove-featured');
+  if (removeBtn) removeBtn.addEventListener('click', () => handleRemoveFeaturedItemFromWatchlist(item));
 }
 
 function attachWatchlistListeners() {
