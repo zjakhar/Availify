@@ -11,4 +11,11 @@ async function checkAvailability(store, query) {
   }
 }
 
-module.exports = { checkAvailability };
+async function scrapeByUrl(url) {
+  if (/walmart\.com/i.test(url)) return walmart.scrapeUrl(url);
+  if (/target\.com/i.test(url)) return target.scrapeUrl(url);
+  if (/costco\.com/i.test(url)) return costco.scrapeUrl(url);
+  throw new Error(`Unsupported store URL: ${url}`);
+}
+
+module.exports = { checkAvailability, scrapeByUrl };
